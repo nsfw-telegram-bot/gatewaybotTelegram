@@ -3,7 +3,7 @@ import logging
 import httpx
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from googlesearch import search
+from duckduckgo_search import DDGS
 
 # Logging setup
 logging.basicConfig(
@@ -15,7 +15,6 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# Supported Gateways & Signatures Dictionary
 GATEWAYS = {
     "Shop Pay / Shopify": ["shop-pay", "shoppay", "cdn.shopify.com", "shopify-checkout", "shop.app/pay"],
     "Stripe": ["js.stripe.com", "stripe.com/pay", "stripe_checkout", "__stripe"],
@@ -27,11 +26,9 @@ GATEWAYS = {
 }
 
 async def detect_gateways(url: str) -> dict:
-    """Inspects the website source code to identify all active payment gateways."""
     detected = []
-    
     try:
-        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=8.0) as client:
+        async with httpx.AsyncClient(headers=HEADERS, follow_redirects=True, timeout=6.0, verify=False) as client:
             response = await client.get(url)
             html = response.text.lower()
 
@@ -40,20 +37,19 @@ async def detect_gateways(url: str) -> dict:
                     detected.append(name)
 
     except Exception:
-        return {"url": url, "gateways": ["Timeout / Protected"], "status": "Error"}
+        return {"url": url, "gateways": ["Timeout / Protected"]}
 
     if not detected:
         detected.append("Custom / Unknown Gateway")
 
-    return {"url": url, "gateways": detected, "status": "Success"}
+    return {"url": url, "gateways": detected}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "⚡ <b>Advanced Multi-Gateway Gaming Store Finder</b>\n\n"
-        "Send /search with any keyword. The bot will automatically inspect and identify the payment gateways used on each site.\n\n"
-        "<b>Examples:</b>\n"
-        "• <code>/search mobile legends top up</code>\n"
-        "• <code>/search razer gold shop pay</code>",
+        "Send /search with any keyword to inspect and identify store gateways.\n\n"
+        "<b>Example:</b>\n"
+        "• <code>/search mobile legends top up</code>",
         parse_mode="HTML"
     )
 
@@ -64,21 +60,20 @@ async def search_stores(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Please provide a query.\nExample: <code>/search genshin top up</code>", parse_mode="HTML")
         return
 
-    status_msg = await update.message.reply_text(f"🔍 Searching Google & inspecting site gateways for: <code>{user_query}</code>...", parse_mode="HTML")
+    status_msg = await update.message.reply_text(f"🔍 Searching & inspecting site gateways for: <code>{user_query}</code>...", parse_mode="HTML")
 
-    # Dynamic search query optimizer
-    if "shopify" not in user_query.lower() and "shop pay" not in user_query.lower():
-        dork_query = f'{user_query} "top up" OR "gaming store"'
-    else:
-        dork_query = user_query
-
+    dork_query = f'"{user_query}" "powered by shopify" OR "top up"'
+    
     raw_urls = []
     try:
-        for url in search(dork_query, num_results=12):
-            raw_urls.append(url)
+        # Fetch search results securely via DuckDuckGo
+        with DDGS() as ddgs:
+            results = list(ddgs.text(dork_query, max_results=10))
+            for r in results:
+                raw_urls.append(r['href'])
             
         if not raw_urls:
-            await status_msg.edit_text("No matching stores found.")
+            await status_msg.edit_text("No matching stores found. Try different keywords.")
             return
 
         verified_results = []
@@ -91,11 +86,10 @@ async def search_stores(update: Update, context: ContextTypes.DEFAULT_TYPE):
             url = item["url"]
             gateways_str = " | ".join(item["gateways"])
             
-            # Highlight Shop Pay / Shopify if present
             if "Shop Pay / Shopify" in item["gateways"]:
                 badge = f"🟢 <b>[{gateways_str}]</b>"
             elif item["gateways"][0] == "Timeout / Protected":
-                badge = "🔴 <i>[Access Blocked / Protection On]</i>"
+                badge = "🔴 <i>[Access Blocked / Protected]</i>"
             else:
                 badge = f"🔵 <b>[{gateways_str}]</b>"
 
@@ -105,6 +99,21 @@ async def search_stores(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(f"Search error: {e}")
+        await status_msg.edit_text("An error occurred during search. Please try again in a few seconds.")
+
+if __name__ == '__main__':
+    TOKEN = os.environ.get("BOT_TOKEN")
+    
+    if not TOKEN:
+        print("Error: BOT_TOKEN is missing!")
+        exit(1)
+
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("search", search_stores))
+    
+    print("Multi-Gateway Inspector Bot is running...")
+    app.run_polling()
         await status_msg.edit_text("An error occurred during search and inspection. Please try again.")
 
 if __name__ == '__main__':
